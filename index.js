@@ -30,7 +30,11 @@ const UserResponseSchema = new mongoose.Schema({
     unique: true,
   },
   first_question: String,
-  second_question: String,
+  second_question: {
+    Comfort: String,
+    Looks: String,
+    Price: String,
+  },
   created_at: {
     type: Date,
     default: Date.now,
@@ -46,23 +50,24 @@ const UserResponse = mongoose.model("UserResponse", UserResponseSchema);
 // Route to handle user details submission (Step 1)
 app.post("/api/submit-email", async (req, res) => {
   try {
-    const { email, firstName, lastName, phone } = req.body;
+    const { email } = req.body;
+
+    const initialData = {
+      email: email,
+      Q1: null,
+      Q2: null,
+      Q2_part1: null, // Comfort
+      Q2_part2: null, // Looks
+      Q2_part3: null, // Price
+      status: "in-progress",
+    };
 
     // Store in Supabase
-    const { data, error } = await supabase.from("user_responses").upsert({
-      email,
-      step: 1,
-    });
+    const { data, error } = await supabase
+      .from("user_responses")
+      .upsert({ email, data: initialData });
 
     if (error) throw error;
-
-    // Update step to 2 after successful user details submission
-    const { data: stepData, error: stepError } = await supabase
-      .from("user_responses")
-      .update({ step: 2 })
-      .eq("email", email);
-
-    if (stepError) throw stepError;
 
     res.json({ success: true, message: "User details stored successfully" });
   } catch (error) {
@@ -70,17 +75,25 @@ app.post("/api/submit-email", async (req, res) => {
   }
 });
 
+// Helper function to check if step2 is complete
+function isStep2Complete(data) {
+  return data.Q2_part1 && data.Q2_part2 && data.Q2_part3;
+}
+
 // Helper function to update or create MongoDB record
 async function updateMongoDBRecord(email, data) {
   try {
     const mongoData = {
       email,
       first_question: data.Q1,
-      second_question: data.Q2,
+      second_question: {
+        Comfort: data.Q2_part1,
+        Looks: data.Q2_part2,
+        Price: data.Q2_part3,
+      },
       updated_at: new Date(),
     };
 
-    // Use findOneAndUpdate with upsert option
     const result = await UserResponse.findOneAndUpdate({ email }, mongoData, {
       upsert: true,
       new: true,
@@ -94,67 +107,61 @@ async function updateMongoDBRecord(email, data) {
   }
 }
 
-// Route to handle question responses (Steps 2 and 3)
+// Route to handle question responses
 app.post("/api/submit-question", async (req, res) => {
   try {
     const { email, questionNumber, answer, part } = req.body;
 
     // Get existing data from Supabase
-    const { data: existingData, error: fetchError } = await supabase
+    const { data: existingRecord, error: fetchError } = await supabase
       .from("user_responses")
-      .select("data, step")
+      .select("data")
       .eq("email", email)
       .single();
+
     if (fetchError) throw fetchError;
 
-    // Update data with new answer
-    let updatedData = { ...existingData.data } || {};
-    let newStep = existingData.step;
+    let updatedData = existingRecord.data || {
+      email: email,
+      Q1: null,
+      Q2: null,
+      Q2_part1: null,
+      Q2_part2: null,
+      Q2_part3: null,
+      status: "in-progress",
+    };
 
+    // Update based on question number
     if (questionNumber === 1) {
-      // Handle Q1 (Step 2)
       updatedData.Q1 = answer;
-      newStep = 3; // Move to Step 3 (Q2)
     } else if (questionNumber === 2) {
-      // Handle Q2 (Step 3)
-      const q2Key = `Q2_part${part}`;
-      updatedData[q2Key] = answer;
+      const partKey = `Q2_part${part}`;
+      updatedData[partKey] = answer;
 
-      // Check if all parts of Q2 are answered
-      const allPartsAnswered = ["Q2_part1", "Q2_part2", "Q2_part3"].every(
-        (key) => updatedData[key] !== undefined
-      );
-
-      if (allPartsAnswered) {
-        // Combine all parts into final Q2 answer
-        updatedData.Q2 = [
-          updatedData.Q2_part1,
-          updatedData.Q2_part2,
-          updatedData.Q2_part3,
-        ].join(",");
-        newStep = 4; // Complete
+      // If all parts are answered, update Q2
+      if (isStep2Complete(updatedData)) {
+        updatedData.Q2 = `${updatedData.Q2_part1},${updatedData.Q2_part2},${updatedData.Q2_part3}`;
+        updatedData.status = "success";
       }
     }
 
     // Update Supabase
     const { data, error } = await supabase
       .from("user_responses")
-      .update({
-        data: updatedData,
-        step: newStep,
-      })
+      .update({ data: updatedData })
       .eq("email", email);
+
     if (error) throw error;
 
-    // Always try to update MongoDB if we have enough data
-    if (updatedData.Q1 || updatedData.Q2) {
+    // Update MongoDB if we have any progress
+    if (updatedData.Q1 || isStep2Complete(updatedData)) {
       await updateMongoDBRecord(email, updatedData);
     }
 
     res.json({
       success: true,
       message: "Response saved successfully",
-      step: newStep,
+      status: updatedData.status,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -168,11 +175,11 @@ app.get("/api/progress/:email", async (req, res) => {
     // Check Supabase for progress
     const { data, error } = await supabase
       .from("user_responses")
-      .select("step, data")
+      .select("data")
       .eq("email", email)
       .single();
     if (error) throw error;
-    res.json({ success: true, data });
+    res.json({ success: true, data: data.data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
