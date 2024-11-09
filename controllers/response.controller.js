@@ -35,6 +35,17 @@ const responseController = {
 
       if (fetchError) throw fetchError;
 
+      // If the questionNumber is 4, check if Q2 and Q3 have been answered
+      if (questionNumber === 4) {
+        if (!existingData.data.Q2 || !existingData.data.Q3) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Please answer Question 2 and Question 3 before submitting Question 4.",
+          });
+        }
+      }
+
       // Update data with new answer
       const updatedData = {
         ...existingData.data,
@@ -43,7 +54,7 @@ const responseController = {
 
       const newStep = questionNumber + 1;
 
-      // Update Supabase
+      // Update Supabase with the new data
       const { data, error } = await supabase
         .from("user_responses")
         .update({
