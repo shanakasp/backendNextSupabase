@@ -1,5 +1,5 @@
 const UserResponse = require("../models/userResponse.mode");
-const { supabase } = require("../config/db.config");
+const { supabase } = require("../config/databasse.js");
 
 const responseController = {
   // Submit email

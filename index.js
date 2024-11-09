@@ -29,8 +29,9 @@ const UserResponseSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
+
   first_question: String,
-  second_question: String, // Will store three parts as comma-separated values
+  second_question: String,
   created_at: {
     type: Date,
     default: Date.now,
@@ -39,24 +40,34 @@ const UserResponseSchema = new mongoose.Schema({
 
 const UserResponse = mongoose.model("UserResponse", UserResponseSchema);
 
-// Route to handle email submission
+// Route to handle user details submission (Step 1)
 app.post("/api/submit-email", async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, firstName, lastName, phone } = req.body;
+
     // Store in Supabase
     const { data, error } = await supabase.from("user_responses").upsert({
       email,
       step: 1,
-      data: {},
     });
+
     if (error) throw error;
-    res.json({ success: true, message: "Email stored successfully" });
+
+    // Update step to 2 after successful user details submission
+    const { data: stepData, error: stepError } = await supabase
+      .from("user_responses")
+      .update({ step: 2 })
+      .eq("email", email);
+
+    if (stepError) throw stepError;
+
+    res.json({ success: true, message: "User details stored successfully" });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Route to handle question responses
+// Route to handle question responses (Steps 2 and 3)
 app.post("/api/submit-question", async (req, res) => {
   try {
     const { email, questionNumber, answer, part } = req.body;
@@ -74,11 +85,11 @@ app.post("/api/submit-question", async (req, res) => {
     let newStep = existingData.step;
 
     if (questionNumber === 1) {
-      // Handle Q1 normally
+      // Handle Q1 (Step 2)
       updatedData.Q1 = answer;
-      newStep = 2; // Move to Q2
+      newStep = 3; // Move to Step 3 (Q2)
     } else if (questionNumber === 2) {
-      // Handle Q2's multiple parts
+      // Handle Q2 (Step 3)
       const q2Key = `Q2_part${part}`;
       updatedData[q2Key] = answer;
 
@@ -94,7 +105,7 @@ app.post("/api/submit-question", async (req, res) => {
           updatedData.Q2_part2,
           updatedData.Q2_part3,
         ].join(",");
-        newStep = 3; // Complete
+        newStep = 4; // Complete
       }
     }
 
@@ -109,9 +120,10 @@ app.post("/api/submit-question", async (req, res) => {
     if (error) throw error;
 
     // If all questions are answered (after Q2 all parts), store in MongoDB
-    if (newStep === 3) {
+    if (newStep === 4) {
       const mongoData = {
         email,
+
         first_question: updatedData.Q1,
         second_question: updatedData.Q2, // Contains all three parts comma-separated
       };
@@ -120,14 +132,14 @@ app.post("/api/submit-question", async (req, res) => {
       const userResponse = new UserResponse(mongoData);
       await userResponse.save();
 
-      // Clear Supabase entry
-      await supabase.from("user_responses").delete().eq("email", email);
+      // // Clear Supabase entry
+      // await supabase.from("user_responses").delete().eq("email", email);
     }
 
     res.json({
       success: true,
       message:
-        newStep === 3
+        newStep === 4
           ? "All responses saved to MongoDB"
           : "Response saved to Supabase",
     });
