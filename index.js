@@ -29,10 +29,13 @@ const UserResponseSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
-
   first_question: String,
   second_question: String,
   created_at: {
+    type: Date,
+    default: Date.now,
+  },
+  updated_at: {
     type: Date,
     default: Date.now,
   },
@@ -67,6 +70,30 @@ app.post("/api/submit-email", async (req, res) => {
   }
 });
 
+// Helper function to update or create MongoDB record
+async function updateMongoDBRecord(email, data) {
+  try {
+    const mongoData = {
+      email,
+      first_question: data.Q1,
+      second_question: data.Q2,
+      updated_at: new Date(),
+    };
+
+    // Use findOneAndUpdate with upsert option
+    const result = await UserResponse.findOneAndUpdate({ email }, mongoData, {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    });
+
+    return result;
+  } catch (error) {
+    console.error("MongoDB update error:", error);
+    throw error;
+  }
+}
+
 // Route to handle question responses (Steps 2 and 3)
 app.post("/api/submit-question", async (req, res) => {
   try {
@@ -81,7 +108,7 @@ app.post("/api/submit-question", async (req, res) => {
     if (fetchError) throw fetchError;
 
     // Update data with new answer
-    let updatedData = { ...existingData.data };
+    let updatedData = { ...existingData.data } || {};
     let newStep = existingData.step;
 
     if (questionNumber === 1) {
@@ -119,29 +146,15 @@ app.post("/api/submit-question", async (req, res) => {
       .eq("email", email);
     if (error) throw error;
 
-    // If all questions are answered (after Q2 all parts), store in MongoDB
-    if (newStep === 4) {
-      const mongoData = {
-        email,
-
-        first_question: updatedData.Q1,
-        second_question: updatedData.Q2, // Contains all three parts comma-separated
-      };
-
-      // Save to MongoDB
-      const userResponse = new UserResponse(mongoData);
-      await userResponse.save();
-
-      // // Clear Supabase entry
-      // await supabase.from("user_responses").delete().eq("email", email);
+    // Always try to update MongoDB if we have enough data
+    if (updatedData.Q1 || updatedData.Q2) {
+      await updateMongoDBRecord(email, updatedData);
     }
 
     res.json({
       success: true,
-      message:
-        newStep === 4
-          ? "All responses saved to MongoDB"
-          : "Response saved to Supabase",
+      message: "Response saved successfully",
+      step: newStep,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
