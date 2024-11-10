@@ -60,12 +60,15 @@ app.post("/api/submit-email", async (req, res) => {
       Q2_part2: null, // Looks
       Q2_part3: null, // Price
       status: "in-progress",
+      step: 0,
     };
 
-    // Store in Supabase
-    const { data, error } = await supabase
-      .from("user_responses")
-      .upsert({ email, data: initialData });
+    // Store in Supabase with initial step value
+    const { data, error } = await supabase.from("user_responses").upsert({
+      email,
+      data: initialData,
+      step: 0,
+    });
 
     if (error) throw error;
 
@@ -78,6 +81,22 @@ app.post("/api/submit-email", async (req, res) => {
 // Helper function to check if step2 is complete
 function isStep2Complete(data) {
   return data.Q2_part1 && data.Q2_part2 && data.Q2_part3;
+}
+
+// Helper function to check if all questions are complete
+function areAllQuestionsComplete(data) {
+  return data.Q1 && isStep2Complete(data);
+}
+
+// Helper function to check if record exists in MongoDB
+async function checkMongoDBRecord(email) {
+  try {
+    const record = await UserResponse.findOne({ email });
+    return !!record; // Returns true if record exists, false otherwise
+  } catch (error) {
+    console.error("MongoDB check error:", error);
+    return false;
+  }
 }
 
 // Helper function to update or create MongoDB record
@@ -115,7 +134,7 @@ app.post("/api/submit-question", async (req, res) => {
     // Get existing data from Supabase
     const { data: existingRecord, error: fetchError } = await supabase
       .from("user_responses")
-      .select("data")
+      .select("data, step")
       .eq("email", email)
       .single();
 
@@ -129,32 +148,52 @@ app.post("/api/submit-question", async (req, res) => {
       Q2_part2: null,
       Q2_part3: null,
       status: "in-progress",
+      step: 0,
     };
+
+    // Get current step from Supabase
+    let currentStep = existingRecord.step || 0;
+    let newStep = currentStep;
 
     // Update based on question number
     if (questionNumber === 1) {
       updatedData.Q1 = answer;
+      // Only update to step 1 if we're not already at step 2
+      if (currentStep < 2) {
+        newStep = 1;
+      }
+      updatedData.step = newStep;
     } else if (questionNumber === 2) {
       const partKey = `Q2_part${part}`;
       updatedData[partKey] = answer;
 
-      // If all parts are answered, update Q2
+      // If all parts are answered, update Q2 and step
       if (isStep2Complete(updatedData)) {
         updatedData.Q2 = `${updatedData.Q2_part1},${updatedData.Q2_part2},${updatedData.Q2_part3}`;
         updatedData.status = "success";
+        newStep = 2;
+        updatedData.step = newStep;
       }
     }
 
-    // Update Supabase
+    // Update both data and step in Supabase
     const { data, error } = await supabase
       .from("user_responses")
-      .update({ data: updatedData })
+      .update({
+        data: updatedData,
+        step: newStep,
+      })
       .eq("email", email);
 
     if (error) throw error;
 
-    // Update MongoDB if we have any progress
-    if (updatedData.Q1 || isStep2Complete(updatedData)) {
+    // Check if record exists in MongoDB (indicating both questions were previously completed)
+    const existsInMongoDB = await checkMongoDBRecord(email);
+
+    // Update MongoDB if either:
+    // 1. Both questions are complete for the first time
+    // 2. Record already exists in MongoDB (meaning both questions were previously completed)
+    if (areAllQuestionsComplete(updatedData) || existsInMongoDB) {
       await updateMongoDBRecord(email, updatedData);
     }
 
@@ -162,6 +201,7 @@ app.post("/api/submit-question", async (req, res) => {
       success: true,
       message: "Response saved successfully",
       status: updatedData.status,
+      step: newStep,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -175,11 +215,15 @@ app.get("/api/progress/:email", async (req, res) => {
     // Check Supabase for progress
     const { data, error } = await supabase
       .from("user_responses")
-      .select("data")
+      .select("data, step")
       .eq("email", email)
       .single();
     if (error) throw error;
-    res.json({ success: true, data: data.data });
+    res.json({
+      success: true,
+      data: data.data,
+      step: data.step,
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
